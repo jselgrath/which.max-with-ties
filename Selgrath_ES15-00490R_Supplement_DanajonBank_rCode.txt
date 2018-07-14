@@ -1,0 +1,167 @@
+# Code for identifying the habitats reported by the highest number of respondents in each raster grid cell and making a new raster with only the most common habitats using the R program. 
+
+# This code is similar to which.max() in the Raster package, but will also find ties for the highest value.
+
+# Input data is geotiff rasters (one per habitat) of counts of the number of resondents who identified a habitat in a given location (see Figure A1).
+
+# Input data assumes that in ArcGIS (or another program) all respondents' habitat maps were layered together together to calculate the count of respondents that identified a given habitat at each location on the map. 
+
+############################################################################################
+####  OBJECTIVE 1: FISHER HABITAT DATA: FIND HABITAT THAT MOST FISHERS IDENTIFIED WAS IN AN AREA
+
+# install.packages("ggplot2")
+# install.packages("raster")
+# install.packages("rasterVis")
+# install.packages('plyr')
+# install.packages('rgdal')
+
+library('ggplot2')
+library('raster')
+library('rasterVis')
+library('plyr')
+library('rgdal')
+
+####################################### 
+### Task 1.1: Setup raster stack  data 
+rm(list=ls())
+
+setwd("C:/workingdir/habitats") 
+
+# list of files
+file.list1 = dir("C:/workingdir/habitats")
+file.list1
+
+# Create a list of only the TIFF files
+# Here the code assumes these raster files have been exported from ArcGIS. Other file types may be in the folder depending on the data source.
+
+raster.list1= file.list1[c(grep('.tif', file.list1))] #for example data
+raster.list1
+
+# Below is better code if using ArcGIS output with several output files 
+# raster.list1= file.list1[  -c(grep('.xml', file.list1),grep('.tfw', file.list1),grep('.png', file.list1), grep('.dbf', file.list1),grep('.ovr', file.list1),grep('other', file.list1))  ]  
+
+##################################
+# Task 1.2: stack the rasters
+rs1 = stack(raster.list1)
+names(rs1)
+
+
+####################################### 
+### Task 1.3: Plot rasters
+plot(rs1[[1]])
+plot(rs1[[2]])
+# or by name =  plot(raster(rs1,'NAME'))
+
+
+##########################################################
+### Task 1.4: Calculate highest count of raster stack
+
+# calc max value for each cell
+hab1<-calc(rs1, fun=function(X,na.rm) X[order(X,decreasing=T)[1]])
+
+#########################################################
+### Task 1.5: load .tif files of counts of fishers who mapped each type of habitat. 
+# Note: Does not work from memory
+# Note: Be careful of NoData from ArcGIS. 
+
+raster.list=raster.list1
+
+coral<- raster("Coral_FisherCount.tif"); 		# Coral
+rubble<- raster("Rubble_FisherCount.tif")	  # Rubble
+
+###################
+# Task 1.6: make list of rasters and list of names
+hab.list<-c(coral, rubble)                       # raster list
+hab.list2<-as.factor(c("coral", "rubble"))       # names
+
+################
+## Function ##
+## Match highest value (hab1) and turn it into 1 
+###############
+
+f1 <- function(x, a, filename="", ...) { 
+  out <- raster(x)
+  big <- ! canProcessInMemory(out, 3)
+  filename <- trim(filename)
+  if (big & filename == "") {
+    filename <- rasterTmpFile()
+  }
+  if (filename != "") {
+    out <- writeStart(out, filename, ...)
+    todisk <- TRUE
+  } else {
+    vv <- matrix(ncol=nrow(out), nrow=ncol(out))
+    todisk <- FALSE
+  }
+  bs <- blockSize(x)
+  pb <- pbCreate(bs$n, ...)
+  
+  # Below is the function of interest
+  if (todisk) {
+    for (i in 1:bs$n) {
+      
+      v <- getValues(x, row=bs$row[i], nrows=bs$nrows[i] )
+      y <- getValues(a, row=bs$row[i], nrows=bs$nrows[i] )
+#       v <- ifelse (v == y, 0,v)  # Changed NA to 0 # this was my orig code
+      v <- ifelse (v == y, 1,0)  # Changed to make match = 1 so can identify many matches
+      
+      out <- writeValues(out, v, bs$row[i])
+      pbStep(pb, i)
+    }
+    out <- writeStop(out)
+    out <- setMinMax(out)
+
+    } else {
+    
+# and again...
+    
+    for (i in 1:bs$n) {
+      v <- getValues(x, row=bs$row[i], nrows=bs$nrows[i] )
+      y <- getValues(a, row=bs$row[i], nrows=bs$nrows[i] )
+#       v <- ifelse (v == y, 0,v)
+      v <- ifelse (v == y, 1,0)
+      
+      cols <- bs$row[i]:(bs$row[i]+bs$nrows[i]-1)
+      vv[,cols] <- matrix(v, nrow=out@ncols)
+      pbStep(pb, i)
+    }
+    out <- setValues(out, as.vector(vv))
+    out <- setMinMax(out) # new line
+  }
+  pbClose(pb)
+  return(out)
+}
+
+##############################
+### Task 2.4 run function for each habitat raster
+## ie turn max to NAs
+
+for (j in 1:length(raster.list1)){
+  print((raster.list1[j]))
+}
+
+n.hab<-length(as.character(raster.list1))
+
+for (j in 1:n.hab){
+  print((hab.list2[j]))
+}
+
+#######################################################
+# # Main Calculation Orig FG
+# Run function (f1) to identify the areas that have the highest value. These are set at 1.
+for (j in 1:length(hab.list)){
+  f1(hab.list[[j]], hab1, filename=paste("MaxTo1_", hab.list2[j],".tif", sep=""), format="GTiff", overwrite=TRUE)
+}
+
+###############################################################
+# Directions for calculating Habitat map with R output in ArcGIS
+################################################################
+# 1. Import .tif files created here to ArcGIS
+# 2. Convert to integer format using Int tool in spatial analyst
+# 3. Convert integer  rasters created in (2) to polygons. Add field (column) in attribute table for habitat (Type = text), and add habitat name. 
+    # For example the Maxto1_coral.tif > Maxto1_coral (integer format) > Maxto1_coralcoral.shp < new field: 'coral' with values = 'coral'
+# 4. For all shapefiles: Select only rows where "GRIDCODE" = 1 
+# 5. Union all shapefiles > New polygon with locations of all max habitats. 
+# 6. Add field 'habitat' (text). Calculate Value = 'coral'& 'rubble'
+# 7. Delete all un-needed columns
+
